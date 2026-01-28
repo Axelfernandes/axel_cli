@@ -1,5 +1,8 @@
 import os
+import logging
 from mistralai_gcp import MistralGoogleCloud
+
+logger = logging.getLogger(__name__)
 from .model_client import BaseModelClient
 
 class VertexMistralClient(BaseModelClient):
@@ -15,18 +18,26 @@ class VertexMistralClient(BaseModelClient):
         self.model = f"{model_name}-{model_version}"
 
     def chat(self, messages, **kwargs) -> str:
-        resp = self.client.chat.complete(
-            model=self.model,
-            messages=messages,
-            **kwargs,
-        )
-        return resp.choices[0].message.content
+        try:
+            resp = self.client.chat.complete(
+                model=self.model,
+                messages=messages,
+                **kwargs,
+            )
+            return resp.choices[0].message.content
+        except Exception as e:
+            logger.error(f"Error in chat completion: {e}")
+            raise e
 
     def fim(self, prompt: str, suffix: str, **kwargs) -> str:
-        resp = self.client.fim.complete(
-            model=self.model,
-            prompt=prompt,
-            suffix=suffix,
-            **kwargs,
-        )
-        return resp.choices[0].message.content
+        try:
+            resp = self.client.fim.complete(
+                model=self.model,
+                prompt=prompt,
+                suffix=suffix,
+                **kwargs,
+            )
+            return resp.choices[0].message.content
+        except Exception as e:
+            logger.error(f"Error in fim completion: {e}")
+            raise e

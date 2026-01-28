@@ -45,14 +45,22 @@ async def health():
 async def chat(payload: ChatPayload):
     if not model_client:
         raise HTTPException(status_code=503, detail="Model client not initialized. Check environment variables.")
-    opts = payload.options or {}
-    content = model_client.chat(payload.messages, **opts)
-    return {"content": content}
+    try:
+        opts = payload.options or {}
+        content = model_client.chat(payload.messages, **opts)
+        return {"content": content}
+    except Exception as e:
+        logger.error(f"Chat endpoint error: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
 
 @app.post("/fim")
 async def fim(payload: FimPayload):
     if not model_client:
         raise HTTPException(status_code=503, detail="Model client not initialized. Check environment variables.")
-    opts = payload.options or {}
-    content = model_client.fim(payload.prompt, payload.suffix, **opts)
-    return {"content": content}
+    try:
+        opts = payload.options or {}
+        content = model_client.fim(payload.prompt, payload.suffix, **opts)
+        return {"content": content}
+    except Exception as e:
+        logger.error(f"Fim endpoint error: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
