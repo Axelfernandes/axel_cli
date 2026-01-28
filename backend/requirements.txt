@@ -1,5 +1,5 @@
 fastapi
 uvicorn
-mistralai-gcp
+mistralai[gcp]
 pydantic
 python-dotenv
