@@ -1,5 +1,6 @@
 fastapi
 uvicorn
 mistralai[gcp]
+google-cloud-aiplatform
 pydantic
 python-dotenv

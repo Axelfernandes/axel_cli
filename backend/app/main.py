@@ -1,6 +1,7 @@
 import os
 import logging
 from fastapi import FastAPI, HTTPException
+from fastapi.responses import JSONResponse
 from pydantic import BaseModel
 from .vertex_mistral_client import VertexMistralClient
 
@@ -51,7 +52,10 @@ async def chat(payload: ChatPayload):
         return {"content": content}
     except Exception as e:
         logger.error(f"Chat endpoint error: {e}")
-        raise HTTPException(status_code=500, detail=str(e))
+        return JSONResponse(
+            status_code=500,
+            content={"error": str(e), "type": type(e).__name__}
+        )
 
 @app.post("/fim")
 async def fim(payload: FimPayload):
@@ -63,4 +67,7 @@ async def fim(payload: FimPayload):
         return {"content": content}
     except Exception as e:
         logger.error(f"Fim endpoint error: {e}")
-        raise HTTPException(status_code=500, detail=str(e))
+        return JSONResponse(
+            status_code=500,
+            content={"error": str(e), "type": type(e).__name__}
+        )
