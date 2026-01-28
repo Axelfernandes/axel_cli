@@ -1,0 +1,28 @@
+steps:
+  # Build the container image
+  - name: "gcr.io/cloud-builders/docker"
+    args: ["build", "-t", "gcr.io/$PROJECT_ID/axel-backend", "backend"]
+  # Push the container image to Artifact Registry / GCR
+  - name: "gcr.io/cloud-builders/docker"
+    args: ["push", "gcr.io/$PROJECT_ID/axel-backend"]
+  # Deploy container image to Cloud Run
+  - name: "gcr.io/google.com/cloudsdktool/cloud-sdk"
+    entrypoint: gcloud
+    args:
+      - "run"
+      - "deploy"
+      - "axel-backend"
+      - "--image"
+      - "gcr.io/$PROJECT_ID/axel-backend"
+      - "--region"
+      - "us-central1"
+      - "--platform"
+      - "managed"
+      - "--allow-unauthenticated"
+      - "--port"
+      - "8080"
+      - "--set-env-vars"
+      - "GOOGLE_CLOUD_REGION=us-central1,GOOGLE_CLOUD_PROJECT_ID=$PROJECT_ID,VERTEX_MODEL_NAME=codestral,VERTEX_MODEL_VERSION=2501"
+
+images:
+  - "gcr.io/$PROJECT_ID/axel-backend"

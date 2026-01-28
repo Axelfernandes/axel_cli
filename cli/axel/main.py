@@ -5,7 +5,7 @@ import requests
 
 # This is a placeholder for the actual backend URL, normally read from a config file.
 # For now, it will be hardcoded, matching the example in axel-desing.md
-BACKEND_URL = os.getenv("AXEL_BACKEND_URL", "https://axel-xxxx.a.run.app")
+BACKEND_URL = os.getenv("AXEL_BACKEND_URL", "https://axel-cli-950180251801.us-central1.run.app")
 
 def chat_command(args):
     """Handles the 'axel chat' command."""
