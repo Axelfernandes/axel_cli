@@ -1,0 +1,11 @@
+.git
+.gitignore
+__pycache__/
+*.py[cod]
+*$py.class
+.env
+.env.*
+!.env.cloudrun
+tests/
+venv/
+.pytest_cache/

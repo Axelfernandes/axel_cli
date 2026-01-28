@@ -11,10 +11,10 @@ COPY ./requirements.txt /app/requirements.txt
 # Install any needed packages specified in requirements.txt
 RUN pip install --no-cache-dir -r requirements.txt
 
-# Make port 8000 available to the world outside this container
-EXPOSE 8000
+# Port is handled by Cloud Run dynamically, we don't strictly need EXPOSE but it's good practice.
+# However, Cloud Run defaults to 8080 if not specified.
+EXPOSE 8080
 
 # Run uvicorn to serve the FastAPI app
-# For Cloud Run, the command should be `uvicorn app.main:app --host 0.0.0.0 --port $PORT`
-# We'll use 8000 as a default for local testing, Cloud Run will override $PORT
-CMD ["uvicorn", "app.main:app", "--host", "0.0.0.0", "--port", "8000"]
+# Cloud Run provides the PORT environment variable.
+CMD ["sh", "-c", "uvicorn app.main:app --host 0.0.0.0 --port ${PORT:-8080}"]
