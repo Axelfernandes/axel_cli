@@ -14,8 +14,13 @@ class VertexMistralClient(BaseModelClient):
             raise ValueError(f"Missing required environment variables: GOOGLE_CLOUD_REGION={region}, GOOGLE_CLOUD_PROJECT_ID={project_id}")
             
         self.client = MistralGoogleCloud(region=region, project_id=project_id)
-        # e.g. model_name="codestral", model_version="2405"
-        self.model = f"{model_name}-{model_version}"
+        
+        # If version is provided, hyphenate it; otherwise use name as is.
+        # This allows using names like 'codestral-2' directly.
+        if model_version and model_version.strip():
+            self.model = f"{model_name}-{model_version}"
+        else:
+            self.model = model_name
 
     def chat(self, messages, **kwargs) -> str:
         try:
