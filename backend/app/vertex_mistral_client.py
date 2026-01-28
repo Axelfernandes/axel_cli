@@ -4,8 +4,12 @@ from .model_client import BaseModelClient
 
 class VertexMistralClient(BaseModelClient):
     def __init__(self, model_name: str, model_version: str):
-        region = os.environ["GOOGLE_CLOUD_REGION"]
-        project_id = os.environ["GOOGLE_CLOUD_PROJECT_ID"]
+        region = os.getenv("GOOGLE_CLOUD_REGION")
+        project_id = os.getenv("GOOGLE_CLOUD_PROJECT_ID")
+        
+        if not region or not project_id:
+            raise ValueError(f"Missing required environment variables: GOOGLE_CLOUD_REGION={region}, GOOGLE_CLOUD_PROJECT_ID={project_id}")
+            
         self.client = MistralGoogleCloud(region=region, project_id=project_id)
         # e.g. model_name="codestral", model_version="2405"
         self.model = f"{model_name}-{model_version}"
