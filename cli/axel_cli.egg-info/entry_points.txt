@@ -1,0 +1,2 @@
+[console_scripts]
+axel = axel.main:main

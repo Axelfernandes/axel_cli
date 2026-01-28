@@ -1,0 +1,9 @@
+pyproject.toml
+axel/__init__.py
+axel/main.py
+axel_cli.egg-info/PKG-INFO
+axel_cli.egg-info/SOURCES.txt
+axel_cli.egg-info/dependency_links.txt
+axel_cli.egg-info/entry_points.txt
+axel_cli.egg-info/requires.txt
+axel_cli.egg-info/top_level.txt

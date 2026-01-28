@@ -1,0 +1,14 @@
+[project]
+name = "axel-cli"
+version = "0.1.0"
+description = "Axel CLI for coding assistance"
+dependencies = [
+    "requests",
+]
+
+[project.scripts]
+axel = "axel.main:main"
+
+[build-system]
+requires = ["setuptools>=61.0"]
+build-backend = "setuptools.build_meta"
