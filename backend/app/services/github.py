@@ -1,5 +1,5 @@
 import httpx
-from typing import Optional
+from typing import Optional, List, Dict, Any, Union
 
 GITHUB_API_URL = "https://api.github.com"
 
