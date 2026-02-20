@@ -1,73 +1,69 @@
 import os
 import logging
+from contextlib import asynccontextmanager
 from fastapi import FastAPI, HTTPException
 from fastapi.responses import JSONResponse
+from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
-from .vertex_mistral_client import VertexMistralClient
+from dotenv import load_dotenv
 
-# Configure logging
+load_dotenv(".env.cloudrun")
+
+from .database import init_db
+
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 
+model_client = None
+
+@asynccontextmanager
+async def lifespan(app: FastAPI):
+    global model_client
+    await init_db()
+    logger.info("Database initialized.")
+    yield
+
+app = FastAPI(title="Axel API", lifespan=lifespan)
+
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=[
+        os.getenv("FRONTEND_URL", "http://localhost:3501"),
+        "http://localhost:3000",
+        "http://localhost:3501",
+    ],
+    allow_credentials=True,
+    allow_methods=["*"],
+    allow_headers=["*"],
+)
+
+from .auth import router as auth_router
+from .routers.repos import router as repos_router
+from .routers.chat import router as chat_router
+from .routers.keys import router as keys_router
+
+app.include_router(auth_router)
+app.include_router(repos_router)
+app.include_router(chat_router)
+app.include_router(keys_router)
+
 class ChatPayload(BaseModel):
     messages: list
-    options: dict | None = None
+    options: dict = None
 
 class FimPayload(BaseModel):
     prompt: str
     suffix: str
-    options: dict | None = None
-
-app = FastAPI()
-
-# Initialize client lazily or safely
-model_client = None
-
-@app.on_event("startup")
-async def startup_event():
-    global model_client
-    try:
-        logger.info("Initializing VertexMistralClient...")
-        model_client = VertexMistralClient(
-            model_name=os.getenv("VERTEX_MODEL_NAME", "codestral"),
-            model_version=os.getenv("VERTEX_MODEL_VERSION", "2501"),
-        )
-        logger.info("VertexMistralClient initialized successfully.")
-    except Exception as e:
-        logger.error(f"Failed to initialize VertexMistralClient: {e}")
-        # We don't raise here to allow the health check to respond, 
-        # but actual endpoints will fail.
+    options: dict = None
 
 @app.get("/health")
 async def health():
-    return {"status": "ok", "client_initialized": model_client is not None}
+    return {"status": "ok", "client_initialized": False}
 
-@app.post("/chat")
+@app.post("/chat/legacy")
 async def chat(payload: ChatPayload):
-    if not model_client:
-        raise HTTPException(status_code=503, detail="Model client not initialized. Check environment variables.")
-    try:
-        opts = payload.options or {}
-        content = model_client.chat(payload.messages, **opts)
-        return {"content": content}
-    except Exception as e:
-        logger.error(f"Chat endpoint error: {e}")
-        return JSONResponse(
-            status_code=500,
-            content={"error": str(e), "type": type(e).__name__}
-        )
+    raise HTTPException(status_code=503, detail="Vertex AI not configured for local development")
 
-@app.post("/fim")
+@app.post("/fim/legacy")
 async def fim(payload: FimPayload):
-    if not model_client:
-        raise HTTPException(status_code=503, detail="Model client not initialized. Check environment variables.")
-    try:
-        opts = payload.options or {}
-        content = model_client.fim(payload.prompt, payload.suffix, **opts)
-        return {"content": content}
-    except Exception as e:
-        logger.error(f"Fim endpoint error: {e}")
-        return JSONResponse(
-            status_code=500,
-            content={"error": str(e), "type": type(e).__name__}
-        )
+    raise HTTPException(status_code=503, detail="Vertex AI not configured for local development")

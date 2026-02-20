@@ -48,3 +48,11 @@ env/
 # OS files
 .DS_Store
 Thumbs.db
+
+# Web/Next.js
+node_modules/
+.next/
+out/
+build/
+.vercel
+/Users/axelfernandes/Desktop/applications/axel/backend/axel.db
