@@ -13,6 +13,7 @@ from ..models import User, Session
 from ..services.ai import get_ai_client
 from ..auth import get_current_user
 from ..crypto import decrypt
+from ..services.embeddings import get_embedding_service
 
 router = APIRouter(prefix="/chat", tags=["chat"])
 
@@ -73,7 +74,9 @@ async def chat(
     messages = [{"role": m.role, "content": m.content} for m in request.messages]
     
     try:
-        content = await ai_client.chat(messages, model=request.model, temperature=request.temperature, max_tokens=request.max_tokens)
+        result = await ai_client.chat(messages, model=request.model, temperature=request.temperature, max_tokens=request.max_tokens)
+        content = result["content"]
+        usage = result.get("usage")
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"AI error: {str(e)}")
     
@@ -96,7 +99,7 @@ async def chat(
     
     await db.commit()
     
-    return {"content": content, "session_id": session_id}
+    return {"content": content, "session_id": session_id, "usage": usage}
 
 @router.post("/stream")
 async def chat_stream(
@@ -114,8 +117,30 @@ async def chat_stream(
         )
     
     ai_client = get_ai_client(request.provider, api_key or "")
+    
+    # RAG: Retrieve context if repo is provided
+    context = ""
+    if request.repo:
+        try:
+            embedding_service = get_embedding_service(api_key=api_key)
+            # Use the last message as the query
+            query_text = request.messages[-1].content
+            search_results = embedding_service.query(query_text)
+            
+            if search_results:
+                context = "\n\nRelevant code snippets from the repository:\n"
+                for res in search_results:
+                    context += f"--- {res['metadata']['path']} ---\n{res['content']}\n"
+        except Exception as e:
+            # Non-blocking: log the error but proceed with chat
+            print(f"RAG Error: {str(e)}")
+
     messages = [{"role": m.role, "content": m.content} for m in request.messages]
     
+    # Inject context into the first message or as a system message if supported
+    if context:
+        messages[0]["content"] = f"Context: {context}\n\nUser Question: {messages[0]['content']}"
+
     session_id = request.session_id or str(uuid.uuid4())
     full_content = []
 
@@ -126,8 +151,12 @@ async def chat_stream(
                 temperature=request.temperature,
                 max_tokens=request.max_tokens
             ):
-                full_content.append(chunk)
-                yield f"data: {json.dumps({'content': chunk, 'session_id': session_id})}\n\n"
+                if "content" in chunk:
+                    text = chunk["content"]
+                    full_content.append(text)
+                    yield f"data: {json.dumps({'content': text, 'session_id': session_id})}\n\n"
+                if "usage" in chunk:
+                    yield f"data: {json.dumps({'usage': chunk['usage'], 'session_id': session_id})}\n\n"
         except Exception as e:
             # Emit a proper error event so the frontend can display it
             yield f"data: {json.dumps({'error': str(e), 'done': True})}\n\n"

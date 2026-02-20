@@ -166,3 +166,89 @@ class GitHubClient:
             )
             response.raise_for_status()
             return response.json()
+
+    async def get_all_contents_recursive(self, owner: str, repo: str, path: str = "", ref: Optional[str] = None) -> List[Dict]:
+        """Recursively fetch all file metadata from a repository."""
+        results = []
+        contents = await self.get_contents(owner, repo, path, ref)
+        
+        if isinstance(contents, list):
+            for item in contents:
+                if item["type"] == "dir":
+                    results.extend(await self.get_all_contents_recursive(owner, repo, item["path"], ref))
+                else:
+                    results.append(item)
+        elif isinstance(contents, dict):
+            # Single file
+            results.append(contents)
+            
+        return results
+
+    async def create_bulk_files(
+        self,
+        owner: str,
+        repo: str,
+        files: List[Dict[str, str]],  # List of {"path": "...", "content": "..."}
+        message: str,
+        branch: str,
+    ):
+        """Create multiple files in a single commit using the Trees API."""
+        async with httpx.AsyncClient() as client:
+            # 1. Get the latest commit SHA of the branch
+            ref_resp = await client.get(
+                f"{GITHUB_API_URL}/repos/{owner}/{repo}/git/refs/heads/{branch}",
+                headers=self.headers
+            )
+            ref_resp.raise_for_status()
+            base_sha = ref_resp.json()["object"]["sha"]
+
+            # 2. Get the tree SHA of that commit
+            commit_resp = await client.get(
+                f"{GITHUB_API_URL}/repos/{owner}/{repo}/git/commits/{base_sha}",
+                headers=self.headers
+            )
+            commit_resp.raise_for_status()
+            base_tree_sha = commit_resp.json()["tree"]["sha"]
+
+            # 3. Create a new tree with the new files
+            tree_data = []
+            for f in files:
+                tree_data.append({
+                    "path": f["path"],
+                    "mode": "100644",
+                    "type": "blob",
+                    "content": f["content"]
+                })
+
+            tree_resp = await client.post(
+                f"{GITHUB_API_URL}/repos/{owner}/{repo}/git/trees",
+                json={
+                    "base_tree": base_tree_sha,
+                    "tree": tree_data
+                },
+                headers=self.headers
+            )
+            tree_resp.raise_for_status()
+            new_tree_sha = tree_resp.json()["sha"]
+
+            # 4. Create a new commit
+            new_commit_resp = await client.post(
+                f"{GITHUB_API_URL}/repos/{owner}/{repo}/git/commits",
+                json={
+                    "message": message,
+                    "tree": new_tree_sha,
+                    "parents": [base_sha]
+                },
+                headers=self.headers
+            )
+            new_commit_resp.raise_for_status()
+            new_commit_sha = new_commit_resp.json()["sha"]
+
+            # 5. Update the reference
+            final_resp = await client.patch(
+                f"{GITHUB_API_URL}/repos/{owner}/{repo}/git/refs/heads/{branch}",
+                json={"sha": new_commit_sha},
+                headers=self.headers
+            )
+            final_resp.raise_for_status()
+            return final_resp.json()

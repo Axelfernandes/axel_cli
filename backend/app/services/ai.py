@@ -3,10 +3,10 @@ import os
 import json
 
 class AIClient:
-    def chat(self, messages: List[Dict], **kwargs) -> str:
+    async def chat(self, messages: List[Dict], **kwargs) -> Dict:
         raise NotImplementedError
     
-    def chat_stream(self, messages: List[Dict], **kwargs):
+    async def chat_stream(self, messages: List[Dict], **kwargs):
         raise NotImplementedError
 
 
@@ -15,7 +15,7 @@ class OpenAIClient(AIClient):
         from openai import AsyncOpenAI
         self.client = AsyncOpenAI(api_key=api_key)
     
-    async def chat(self, messages: List[Dict], **kwargs) -> str:
+    async def chat(self, messages: List[Dict], **kwargs) -> Dict:
         model = kwargs.get("model", "gpt-4o")
         response = await self.client.chat.completions.create(
             model=model,
@@ -23,7 +23,14 @@ class OpenAIClient(AIClient):
             temperature=kwargs.get("temperature", 0.7),
             max_tokens=kwargs.get("max_tokens", 4096),
         )
-        return response.choices[0].message.content
+        return {
+            "content": response.choices[0].message.content,
+            "usage": {
+                "prompt_tokens": response.usage.prompt_tokens,
+                "completion_tokens": response.usage.completion_tokens,
+                "total_tokens": response.usage.total_tokens
+            }
+        }
     
     async def chat_stream(self, messages: List[Dict], **kwargs):
         model = kwargs.get("model", "gpt-4o")
@@ -33,10 +40,19 @@ class OpenAIClient(AIClient):
             temperature=kwargs.get("temperature", 0.7),
             max_tokens=kwargs.get("max_tokens", 4096),
             stream=True,
+            stream_options={"include_usage": True}
         )
         async for chunk in stream:
-            if chunk.choices[0].delta.content:
-                yield chunk.choices[0].delta.content
+            if chunk.choices and chunk.choices[0].delta.content:
+                yield {"content": chunk.choices[0].delta.content}
+            if chunk.usage:
+                yield {
+                    "usage": {
+                        "prompt_tokens": chunk.usage.prompt_tokens,
+                        "completion_tokens": chunk.usage.completion_tokens,
+                        "total_tokens": chunk.usage.total_tokens
+                    }
+                }
 
 
 class AnthropicClient(AIClient):
@@ -44,7 +60,7 @@ class AnthropicClient(AIClient):
         from anthropic import AsyncAnthropic
         self.client = AsyncAnthropic(api_key=api_key)
     
-    async def chat(self, messages: List[Dict], **kwargs) -> str:
+    async def chat(self, messages: List[Dict], **kwargs) -> Dict:
         model = kwargs.get("model", "claude-3-5-sonnet-20241022")
         system_message = ""
         filtered_messages = []
@@ -61,7 +77,14 @@ class AnthropicClient(AIClient):
             temperature=kwargs.get("temperature", 0.7),
             max_tokens=kwargs.get("max_tokens", 4096),
         )
-        return response.content[0].text
+        return {
+            "content": response.content[0].text,
+            "usage": {
+                "prompt_tokens": response.usage.input_tokens,
+                "completion_tokens": response.usage.output_tokens,
+                "total_tokens": response.usage.input_tokens + response.usage.output_tokens
+            }
+        }
     
     async def chat_stream(self, messages: List[Dict], **kwargs):
         model = kwargs.get("model", "claude-3-5-sonnet-20241022")
@@ -80,8 +103,19 @@ class AnthropicClient(AIClient):
             temperature=kwargs.get("temperature", 0.7),
             max_tokens=kwargs.get("max_tokens", 4096),
         ) as stream:
-            async for text in stream.text_stream:
-                yield text
+            async for event in stream:
+                if event.type == "content_block_delta":
+                    yield {"content": event.delta.text}
+                elif event.type == "message_stop":
+                    # Anthropic stream object has usage after consumption
+                    final_msg = await stream.get_final_message()
+                    yield {
+                        "usage": {
+                            "prompt_tokens": final_msg.usage.input_tokens,
+                            "completion_tokens": final_msg.usage.output_tokens,
+                            "total_tokens": final_msg.usage.input_tokens + final_msg.usage.output_tokens
+                        }
+                    }
 
 
 class GeminiClient(AIClient):
@@ -108,7 +142,7 @@ class GeminiClient(AIClient):
                 contents.append({"role": gemini_role, "parts": [{"text": text}]})
         return contents, system_parts
 
-    async def chat(self, messages: List[Dict], **kwargs) -> str:
+    async def chat(self, messages: List[Dict], **kwargs) -> Dict:
         import httpx
         model = kwargs.get("model", "gemini-flash-latest")
         contents, system_parts = self._build_contents(messages)
@@ -128,7 +162,15 @@ class GeminiClient(AIClient):
             response = await client.post(url, json=payload)
             response.raise_for_status()
             data = response.json()
-            return data["candidates"][0]["content"]["parts"][0]["text"]
+            usage = data.get("usageMetadata", {})
+            return {
+                "content": data["candidates"][0]["content"]["parts"][0]["text"],
+                "usage": {
+                    "prompt_tokens": usage.get("promptTokenCount", 0),
+                    "completion_tokens": usage.get("candidatesTokenCount", 0),
+                    "total_tokens": usage.get("totalTokenCount", 0)
+                }
+            }
 
     async def chat_stream(self, messages: List[Dict], **kwargs):
         import httpx
@@ -154,8 +196,18 @@ class GeminiClient(AIClient):
                         import json as _json
                         try:
                             chunk = _json.loads(line[6:])
-                            text = chunk["candidates"][0]["content"]["parts"][0]["text"]
-                            yield text
+                            if "candidates" in chunk:
+                                text = chunk["candidates"][0]["content"]["parts"][0]["text"]
+                                yield {"content": text}
+                            if "usageMetadata" in chunk:
+                                usage = chunk["usageMetadata"]
+                                yield {
+                                    "usage": {
+                                        "prompt_tokens": usage.get("promptTokenCount", 0),
+                                        "completion_tokens": usage.get("candidatesTokenCount", 0),
+                                        "total_tokens": usage.get("totalTokenCount", 0)
+                                    }
+                                }
                         except Exception:
                             continue
 
@@ -167,14 +219,22 @@ class VertexMistralClient(AIClient):
         self.model = os.getenv("VERTEX_MODEL_NAME", "codestral")
         self.version = os.getenv("VERTEX_MODEL_VERSION", "2501")
     
-    def chat(self, messages: List[Dict], **kwargs) -> str:
+    async def chat(self, messages: List[Dict], **kwargs) -> Dict:
         full_model = f"{self.model}-{self.version}"
         response = self.client.chat.complete(
             model=full_model,
             messages=messages,
             **kwargs,
         )
-        return response.choices[0].message.content
+        # Mistral usage
+        return {
+            "content": response.choices[0].message.content,
+            "usage": {
+                "prompt_tokens": response.usage.input_tokens,
+                "completion_tokens": response.usage.output_tokens,
+                "total_tokens": response.usage.input_tokens + response.usage.output_tokens
+            }
+        }
 
     async def chat_stream(self, messages: List[Dict], **kwargs):
         """Streaming chat completion for Mistral on Vertex AI."""
@@ -187,7 +247,16 @@ class VertexMistralClient(AIClient):
         )
         for chunk in stream_response:
             if chunk.choices[0].delta.content:
-                yield chunk.choices[0].delta.content
+                yield {"content": chunk.choices[0].delta.content}
+            if hasattr(chunk, 'usage') and chunk.usage:
+                yield {
+                    "usage": {
+                        "prompt_tokens": chunk.usage.input_tokens,
+                        "completion_tokens": chunk.usage.output_tokens,
+                        "total_tokens": chunk.usage.input_tokens + chunk.usage.output_tokens
+                    }
+                }
+        # Note: Mistral sync stream might only provide usage at the end or not at all depending on SDK version
 
 
 class CerebrasClient(AIClient):
@@ -198,7 +267,7 @@ class CerebrasClient(AIClient):
             base_url="https://api.cerebras.ai/v1"
         )
     
-    async def chat(self, messages: List[Dict], **kwargs) -> str:
+    async def chat(self, messages: List[Dict], **kwargs) -> Dict:
         model = kwargs.get("model", "llama3.1-8b")
         response = await self.client.chat.completions.create(
             model=model,
@@ -206,7 +275,14 @@ class CerebrasClient(AIClient):
             temperature=kwargs.get("temperature", 0.7),
             max_tokens=kwargs.get("max_tokens", 4096),
         )
-        return response.choices[0].message.content
+        return {
+            "content": response.choices[0].message.content,
+            "usage": {
+                "prompt_tokens": response.usage.prompt_tokens,
+                "completion_tokens": response.usage.completion_tokens,
+                "total_tokens": response.usage.total_tokens
+            }
+        }
     
     async def chat_stream(self, messages: List[Dict], **kwargs):
         model = kwargs.get("model", "llama3.1-8b")
@@ -216,10 +292,19 @@ class CerebrasClient(AIClient):
             temperature=kwargs.get("temperature", 0.7),
             max_tokens=kwargs.get("max_tokens", 4096),
             stream=True,
+            stream_options={"include_usage": True}
         )
         async for chunk in stream:
-            if chunk.choices[0].delta.content:
-                yield chunk.choices[0].delta.content
+            if chunk.choices and chunk.choices[0].delta.content:
+                yield {"content": chunk.choices[0].delta.content}
+            if hasattr(chunk, 'usage') and chunk.usage:
+                yield {
+                    "usage": {
+                        "prompt_tokens": chunk.usage.prompt_tokens,
+                        "completion_tokens": chunk.usage.completion_tokens,
+                        "total_tokens": chunk.usage.total_tokens
+                    }
+                }
 
 
 def get_ai_client(provider: str, api_key: str, **kwargs) -> AIClient:
