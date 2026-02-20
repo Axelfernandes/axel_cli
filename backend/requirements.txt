@@ -3,7 +3,7 @@ uvicorn
 pydantic
 python-dotenv
 httpx
-sqlalchemy
+sqlalchemy>=2.0.0
 asyncpg
 alembic
 aiosqlite
