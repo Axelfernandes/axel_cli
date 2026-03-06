@@ -1,8 +1,8 @@
 "use client";
 
 import { useEffect, useRef, useState, useCallback } from "react";
-import { useSearchParams } from "next/navigation";
-import { api, Repo, FileItem, ChatMessage } from "@/lib/api";
+import { useSearchParams, useRouter } from "next/navigation";
+import { api, Repo, FileItem, ChatMessage, User } from "@/lib/api";
 import {
   Folder,
   File,
@@ -20,6 +20,9 @@ import {
   RefreshCw,
   Database,
   Sparkles,
+  Github,
+  Code,
+  Zap,
 } from "lucide-react";
 import toast, { Toaster } from "react-hot-toast";
 import dynamic from "next/dynamic";
@@ -56,11 +59,15 @@ function getLanguage(path: string): string {
 
 export default function Dashboard() {
   const searchParams = useSearchParams();
+  const router = useRouter();
   const [token, setToken] = useState<string | null>(null);
+  const [currentUser, setCurrentUser] = useState<User | null>(null);
   const [repos, setRepos] = useState<Repo[]>([]);
   const [selectedRepo, setSelectedRepo] = useState<Repo | null>(null);
   const [files, setFiles] = useState<FileItem[]>([]);
   const [isIndexing, setIsIndexing] = useState(false);
+  const [indexingProgress, setIndexingProgress] = useState(0);
+  const [indexingStatus, setIndexingStatus] = useState<string>("none");
   const [isScaffolding, setIsScaffolding] = useState(false);
   const [projectMode, setProjectMode] = useState<"web" | "react-native">("web");
   const [currentPath, setCurrentPath] = useState("");
@@ -98,16 +105,91 @@ export default function Dashboard() {
       window.history.replaceState({}, "", "/dashboard");
     } else {
       const stored = localStorage.getItem("token");
-      if (stored) setToken(stored);
+      if (stored) {
+        setToken(stored);
+      } else {
+        router.push("/login");
+      }
     }
-  }, [searchParams]);
+  }, [searchParams, router]);
 
   useEffect(() => {
     if (token) {
-      loadRepos();
+      loadProfile();
       loadKeys();
     }
   }, [token]);
+
+  // Initial Indexing Status check when repo changes
+  useEffect(() => {
+    if (selectedRepo) {
+      api.getIndexStatus(selectedRepo.owner.login, selectedRepo.name)
+        .then((status) => {
+          if (status) {
+            setIndexingStatus(status.status || "none");
+            setIndexingProgress(status.progress || 0);
+            if (status.status === "indexing") {
+              setIsIndexing(true);
+            }
+          }
+        })
+        .catch((err) => {
+          console.error("Failed to fetch initial index status", err);
+          setIndexingStatus("none");
+          setIndexingProgress(0);
+        });
+    } else {
+      setIndexingStatus("none");
+      setIndexingProgress(0);
+      setIsIndexing(false);
+    }
+  }, [selectedRepo]);
+
+  // Indexing polling
+  useEffect(() => {
+    let interval: any;
+    if (isIndexing && selectedRepo) {
+      interval = setInterval(async () => {
+        try {
+          const status = await api.getIndexStatus(selectedRepo.owner.login, selectedRepo.name);
+          setIndexingProgress(status.progress);
+          setIndexingStatus(status.status);
+
+          if (status.status === "completed") {
+            setIsIndexing(false);
+            setIndexingProgress(100);
+            toast.success("Indexing complete! Axel now knows your codebase.", {
+              icon: "🔋",
+              duration: 5000
+            });
+            clearInterval(interval);
+          } else if (status.status === "failed") {
+            setIsIndexing(false);
+            toast.error("Indexing failed. Please check your API keys.");
+            clearInterval(interval);
+          }
+        } catch (err) {
+          console.error("Polling error:", err);
+        }
+      }, 2000);
+    }
+    return () => clearInterval(interval);
+  }, [isIndexing, selectedRepo]);
+
+  async function loadProfile() {
+    try {
+      const profile = await api.getMe();
+      setCurrentUser(profile);
+      if (profile.is_github_connected) {
+        loadRepos();
+      }
+    } catch (err: any) {
+      if (err.message === "User not found" || err.message === "Invalid token") {
+        localStorage.removeItem("token");
+        router.push("/login");
+      }
+    }
+  }
 
   async function loadRepos(search?: string) {
     try {
@@ -264,13 +346,15 @@ export default function Dashboard() {
   async function handleIndexRepo() {
     if (!selectedRepo) return;
     setIsIndexing(true);
+    setIndexingProgress(0);
+    setIndexingStatus("indexing");
     try {
       await api.indexRepo(selectedRepo.owner.login, selectedRepo.name);
       toast.success("Indexing started! Axel will soon know your whole codebase.");
     } catch (err: any) {
       toast.error("Failed to start indexing: " + err.message);
-    } finally {
       setIsIndexing(false);
+      setIndexingStatus("failed");
     }
   }
 
@@ -289,7 +373,12 @@ export default function Dashboard() {
 
   function signOut() {
     localStorage.removeItem("token");
-    window.location.href = "/";
+    window.location.href = "/login";
+  }
+
+  function handleConnectGitHub() {
+    const backendUrl = process.env.NEXT_PUBLIC_API_URL || "http://localhost:3500";
+    window.location.href = `${backendUrl}/auth/github?token=${token}`;
   }
 
   function handleKeyDown(e: React.KeyboardEvent<HTMLTextAreaElement>) {
@@ -317,96 +406,54 @@ export default function Dashboard() {
       <Toaster position="top-right" />
 
       {/* Header */}
-      <header className="h-12 border-b flex items-center px-3 gap-3 bg-gray-950 text-white flex-shrink-0">
-        <span className="font-bold text-lg tracking-tight text-white">Axel</span>
-        <div className="h-5 w-px bg-gray-700" />
+      {/* Header Toolbar */}
+      <header className="h-16 border-b border-gray-800 flex items-center px-6 bg-gray-950 text-white flex-shrink-0 z-20 relative sticky top-0 shadow-sm shadow-black/50">
 
-        {/* Repo selector */}
-        <div className="flex items-center gap-2 flex-1 min-w-0">
-          <select
-            className="bg-gray-800 border border-gray-700 text-white text-sm rounded px-2 py-1 max-w-xs truncate cursor-pointer"
-            onChange={(e) => {
-              const repo = repos.find((r) => r.full_name === e.target.value);
-              if (repo) handleSelectRepo(repo);
-            }}
-            value={selectedRepo?.full_name || ""}
-          >
-            <option value="">Select a repository…</option>
-            {repos.map((repo) => (
-              <option key={repo.id} value={repo.full_name}>{repo.full_name}</option>
-            ))}
-          </select>
-          <button onClick={() => loadRepos()} title="Refresh repos" className="text-gray-400 hover:text-white transition-colors mr-2">
-            <RefreshCw className="h-4 w-4" />
-          </button>
+        {/* Left Section: Logo */}
+        <div className="flex items-center gap-4 min-w-0">
+          <div className="flex items-center gap-2">
+            <div className="w-8 h-8 rounded-lg bg-gradient-to-br from-blue-500 to-purple-600 flex items-center justify-center shadow-lg shadow-blue-500/20">
+              <Sparkles className="h-4 w-4 text-white" />
+            </div>
+            <span className="font-extrabold text-xl tracking-tight bg-clip-text text-transparent bg-gradient-to-r from-white to-gray-400">Axel</span>
+          </div>
 
-          {selectedRepo && (
-            <>
-              <button
-                onClick={handleIndexRepo}
-                disabled={isIndexing}
-                title="Index codebase for RAG"
-                className={`flex items-center gap-1.5 px-2 py-1 rounded text-xs transition-colors ${isIndexing ? "bg-blue-900 text-blue-200" : "bg-gray-800 text-gray-300 hover:bg-gray-700 hover:text-white"}`}
-              >
-                {isIndexing ? (
-                  <Loader2 className="h-3.5 w-3.5 animate-spin" />
-                ) : (
-                  <Database className="h-3.5 w-3.5" />
-                )}
-                <span>{isIndexing ? "Indexing..." : "Index"}</span>
-              </button>
+          <div className="h-6 w-px bg-gray-800 mx-2" />
 
-              {projectMode !== "web" && (
-                <button
-                  onClick={handleScaffold}
-                  disabled={isScaffolding}
-                  title={`Scaffold ${projectMode} project`}
-                  className={`flex items-center gap-1.5 px-2 py-1 rounded text-xs transition-colors ${isScaffolding ? "bg-purple-900 text-purple-200" : "bg-purple-600 text-white hover:bg-purple-700"}`}
-                >
-                  {isScaffolding ? (
-                    <Loader2 className="h-3.5 w-3.5 animate-spin" />
-                  ) : (
-                    <Sparkles className="h-3.5 w-3.5" />
-                  )}
-                  <span>{isScaffolding ? "Scaffolding..." : "Scaffold"}</span>
-                </button>
-              )}
-            </>
+          {/* Repo selector */}
+          {!currentUser?.is_github_connected ? (
+            <button
+              onClick={handleConnectGitHub}
+              className="group flex items-center gap-2 bg-gradient-to-r from-gray-800 to-gray-900 hover:from-gray-700 hover:to-gray-800 border border-gray-700 text-white text-sm font-semibold py-1.5 px-4 rounded-full transition-all active:scale-95 shadow-md shadow-black/20"
+            >
+              <Github className="h-4 w-4 text-gray-400 group-hover:text-white transition-colors" />
+              <span>Connect GitHub</span>
+            </button>
+          ) : (
+            <div className="flex items-center gap-3 bg-black/60 border border-gray-800 rounded-full p-1 pl-3 shadow-inner">
+              <div className="flex items-center text-sm gap-2">
+                <Github className="h-4 w-4 text-gray-400" />
+                <div className="relative group">
+                  <select
+                    className="appearance-none bg-transparent border-none text-gray-200 text-sm font-medium py-1.5 pr-8 pl-1 outline-none cursor-pointer max-w-[250px] truncate hover:text-white transition-colors"
+                    onChange={(e) => {
+                      const repo = repos.find((r) => r.full_name === e.target.value);
+                      if (repo) handleSelectRepo(repo);
+                    }}
+                    value={selectedRepo?.full_name || ""}
+                  >
+                    <option value="" className="bg-gray-900 text-gray-400">Select repository...</option>
+                    {repos.map((repo) => (
+                      <option key={repo.id} value={repo.full_name} className="bg-gray-900 text-white">{repo.full_name}</option>
+                    ))}
+                  </select>
+                  <ChevronDown className="absolute right-2 top-1/2 -translate-y-1/2 h-4 w-4 text-gray-500 group-hover:text-gray-300 pointer-events-none transition-colors" />
+                </div>
+              </div>
+            </div>
           )}
         </div>
-
-        {/* Project Mode selector */}
-        <select
-          className="bg-gray-800 border border-gray-700 text-white text-sm rounded px-2 py-1 cursor-pointer"
-          value={projectMode}
-          onChange={(e) => setProjectMode(e.target.value as "web" | "react-native")}
-        >
-          <option value="web">Web Mode</option>
-          <option value="react-native">React Native Mode</option>
-        </select>
-
-        {/* Provider selector */}
-        <select
-          className="bg-gray-800 border border-gray-700 text-white text-sm rounded px-2 py-1 cursor-pointer"
-          value={provider}
-          onChange={(e) => setProvider(e.target.value as ProviderId)}
-        >
-          {PROVIDERS.map((p) => (
-            <option key={p.id} value={p.id}>{p.label}</option>
-          ))}
-        </select>
-
-        <button
-          onClick={() => setShowSettings(!showSettings)}
-          className={`p-1.5 rounded transition-colors ${showSettings ? "bg-gray-700 text-white" : "text-gray-400 hover:text-white"}`}
-          title="Settings"
-        >
-          <Key className="h-4 w-4" />
-        </button>
-        <button onClick={signOut} title="Sign out" className="text-gray-400 hover:text-white transition-colors">
-          <LogOut className="h-4 w-4" />
-        </button>
-      </header >
+      </header>
 
       {/* Settings Panel */}
       {
@@ -650,7 +697,139 @@ export default function Dashboard() {
             </div>
           </Panel>
         </Group>
+
+        {/* Right Dock */}
+        <aside className="w-[72px] flex-shrink-0 border-l border-gray-800 bg-gray-950 flex flex-col items-center py-6 gap-6 relative z-10 shadow-[-4px_0_24px_rgba(0,0,0,0.5)]">
+
+          {/* Top Tools Container */}
+          <div className="flex flex-col gap-4 w-full items-center">
+
+            {/* Refresh Repo */}
+            <button
+              onClick={() => loadRepos()}
+              title="Refresh repositories"
+              className="p-3 bg-gray-900 rounded-xl border border-gray-800 text-gray-400 hover:text-white hover:border-gray-600 transition-all active:scale-95 shadow-sm hover:shadow-md group relative"
+            >
+              <RefreshCw className="h-5 w-5 group-hover:rotate-180 transition-transform duration-500" />
+            </button>
+
+            {/* Index Repo Battery */}
+            <button
+              onClick={handleIndexRepo}
+              disabled={isIndexing || indexingStatus === "completed" || !selectedRepo}
+              title={isIndexing ? `Indexing ${indexingProgress}%` : indexingStatus === "completed" ? "Indexed" : "Index Repo"}
+              className={`p-3 rounded-xl border transition-all shadow-sm active:scale-95 group relative overflow-hidden ${isIndexing ? "border-blue-500 bg-blue-900/40" :
+                indexingStatus === "completed" ? "border-green-500 bg-green-900/30 shadow-green-500/20" :
+                  "bg-gray-900 border-gray-800 hover:border-blue-500/50 hover:bg-gray-800 hover:shadow-blue-500/10"
+                } ${!selectedRepo ? "opacity-30 cursor-not-allowed" : ""}`}
+            >
+              {/* Vertical Battery Fill */}
+              <div
+                className={`absolute bottom-0 left-0 right-0 opacity-40 transition-all duration-1000 ${indexingProgress < 30 ? "bg-red-500" : indexingProgress < 70 ? "bg-yellow-500" : "bg-green-500"
+                  }`}
+                style={{ height: `${indexingProgress}%` }}
+              />
+
+              {/* Icon */}
+              <div className="relative z-10 flex flex-col items-center">
+                {!isIndexing && indexingStatus === "completed" ? (
+                  <Check className="h-5 w-5 text-green-400 drop-shadow-md" />
+                ) : isIndexing ? (
+                  <Loader2 className="h-5 w-5 animate-spin text-blue-400 drop-shadow-md" />
+                ) : (
+                  <Database className="h-5 w-5 text-gray-400 group-hover:text-blue-400 transition-colors" />
+                )}
+              </div>
+            </button>
+
+            {/* Scaffold App */}
+            {currentUser?.is_github_connected && (
+              <button
+                onClick={handleScaffold}
+                disabled={isScaffolding || !selectedRepo || projectMode === "web"}
+                title={projectMode === "web" ? "Enable React Native Mode to Scaffold" : `Scaffold ${projectMode} project`}
+                className={`p-3 rounded-xl border transition-all active:scale-95 shadow-sm group relative ${isScaffolding ? "border-purple-500 bg-purple-900/40 text-purple-300" :
+                  projectMode === "web" ? "opacity-30 cursor-not-allowed bg-gray-900 border-gray-800 text-gray-500" :
+                    "bg-gradient-to-br from-indigo-900/50 to-purple-900/50 border-purple-500/30 hover:border-purple-500 text-gray-300 hover:text-white hover:shadow-purple-500/20"
+                  } ${!selectedRepo ? "opacity-30 cursor-not-allowed" : ""}`}
+              >
+                {isScaffolding ? (
+                  <Loader2 className="h-5 w-5 animate-spin" />
+                ) : (
+                  <Sparkles className="h-5 w-5 group-hover:scale-110 transition-transform" />
+                )}
+              </button>
+            )}
+
+            <div className="w-8 h-px bg-gray-800 my-1" />
+          </div>
+
+          <div className="flex-1" />
+
+          {/* Bottom Settings Container */}
+          <div className="flex flex-col gap-4 w-full items-center">
+
+            {/* Project Mode Toggle */}
+            {currentUser?.is_github_connected && (
+              <div
+                className="relative group p-3 bg-gray-900 rounded-xl border border-gray-800 hover:border-indigo-500 transition-all cursor-pointer shadow-sm hover:shadow-indigo-500/20"
+                title={`Mode: ${projectMode === 'web' ? 'Web' : 'React Native'}\n(Click to change)`}
+              >
+                <Code className={`h-5 w-5 relative z-10 pointer-events-none transition-colors ${projectMode === 'react-native' ? 'text-indigo-400' : 'text-gray-400'}`} />
+                <select
+                  className="absolute inset-0 opacity-0 cursor-pointer"
+                  value={projectMode}
+                  onChange={(e) => setProjectMode(e.target.value as "web" | "react-native")}
+                >
+                  <option value="web">Web</option>
+                  <option value="react-native">React Native</option>
+                </select>
+              </div>
+            )}
+
+            {/* Provider Toggle */}
+            <div
+              className="relative group p-3 bg-gray-900 rounded-xl border border-gray-800 hover:border-yellow-500 transition-all cursor-pointer shadow-sm hover:shadow-yellow-500/20"
+              title={`Provider: ${PROVIDERS.find(p => p.id === provider)?.label || provider}\n(Click to change)`}
+            >
+              <Zap className="h-5 w-5 relative z-10 pointer-events-none text-yellow-500/80 group-hover:text-yellow-400 transition-colors" />
+              <select
+                className="absolute inset-0 opacity-0 cursor-pointer"
+                value={provider}
+                onChange={(e) => setProvider(e.target.value as ProviderId)}
+              >
+                {PROVIDERS.map((p) => (
+                  <option key={p.id} value={p.id}>{p.label}</option>
+                ))}
+              </select>
+            </div>
+
+            {/* API Keys Settings */}
+            <button
+              onClick={() => setShowSettings(!showSettings)}
+              title="API Keys Configuration"
+              className="p-3 bg-gray-900 rounded-xl border border-gray-800 text-gray-400 hover:text-white hover:border-gray-500 transition-all active:scale-95 relative shadow-sm"
+            >
+              <Key className="h-5 w-5 group-hover:rotate-12 transition-transform" />
+              {(!currentUser?.has_openai_key && !currentUser?.has_anthropic_key && !currentUser?.has_gemini_key && !currentUser?.has_cerebras_key) && (
+                <span className="absolute -top-1 -right-1 h-3 w-3 rounded-full bg-red-500 border-2 border-gray-900 shadow-sm shadow-red-500/50" />
+              )}
+            </button>
+
+            <div className="w-8 h-px bg-gray-800 my-1" />
+
+            {/* User Profile / Logout */}
+            <button
+              onClick={signOut}
+              title={`Sign Out (${currentUser?.github_username || currentUser?.email?.split('@')[0] || "Account"})`}
+              className="p-3 rounded-xl text-gray-500 hover:text-red-400 hover:bg-red-500/10 transition-all active:scale-95 group relative"
+            >
+              <LogOut className="h-5 w-5 group-hover:-translate-x-0.5 transition-transform" />
+              <div className="absolute top-1 right-1 w-2.5 h-2.5 rounded-full bg-green-500 border-2 border-gray-950 shadow-sm shadow-green-500/50" />
+            </button>
+          </div>
+
+        </aside>
       </div>
-    </div >
-  );
+    </div >);
 }

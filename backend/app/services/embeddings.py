@@ -2,23 +2,49 @@ import os
 import chromadb
 from chromadb.utils import embedding_functions
 from typing import List, Dict, Optional
+from chromadb.api.types import Documents, EmbeddingFunction, Embeddings
 import logging
+
+class RestGeminiEmbeddingFunction(EmbeddingFunction):
+    def __init__(self, api_key: str, model_name: str = "models/gemini-embedding-001"):
+        self.api_key = api_key
+        self.model_name = model_name
+
+    def __call__(self, input: Documents) -> Embeddings:
+        import httpx
+        url = f"https://generativelanguage.googleapis.com/v1beta/{self.model_name}:batchEmbedContents?key={self.api_key}"
+        
+        # We need to chunk requests if there are too many, but typically chroma batches them.
+        requests = [
+            {"model": self.model_name, "content": {"parts": [{"text": text}]}}
+            for text in input
+        ]
+        
+        with httpx.Client(timeout=60) as client:
+            response = client.post(url, json={"requests": requests})
+            if response.status_code != 200:
+                raise ValueError(f"Gemini API Error: {response.text}")
+            data = response.json()
+            return [ans["values"] for ans in data["embeddings"]]
 
 logger = logging.getLogger(__name__)
 
 class EmbeddingService:
-    def __init__(self, persist_directory: str = "./chroma_db", api_key: Optional[str] = None):
+    def __init__(self, persist_directory: str = "./chroma_db", openai_key: Optional[str] = None, gemini_key: Optional[str] = None):
         self.client = chromadb.PersistentClient(path=persist_directory)
         
-        # Default to OpenAI if key is provided, otherwise can be configured
-        if api_key:
+        if openai_key:
             self.embedding_fn = embedding_functions.OpenAIEmbeddingFunction(
-                api_key=api_key,
+                api_key=openai_key,
                 model_name="text-embedding-3-small"
             )
+        elif gemini_key:
+            self.embedding_fn = RestGeminiEmbeddingFunction(
+                api_key=gemini_key,
+                model_name="models/gemini-embedding-001"
+            )
         else:
-            # Fallback or placeholder
-            self.embedding_fn = embedding_functions.DefaultEmbeddingFunction()
+            raise ValueError("No valid API key provided for embeddings. Please configure OpenAI or Gemini keys in settings.")
             
         self.collection = self.client.get_or_create_collection(
             name="axel_codebase",
@@ -92,8 +118,8 @@ class EmbeddingService:
 # Singleton instance
 _embedding_service = None
 
-def get_embedding_service(api_key: Optional[str] = None):
-    global _embedding_service
-    if _embedding_service is None:
-        _embedding_service = EmbeddingService(api_key=api_key)
-    return _embedding_service
+def get_embedding_service(openai_key: Optional[str] = None, gemini_key: Optional[str] = None):
+    # In a multi-user environment, we should ideally not use a single global singleton
+    # if users have different keys. For now, we recreate the service if it's called
+    # with keys so the correct embedding function is used per-request.
+    return EmbeddingService(openai_key=openai_key, gemini_key=gemini_key)

@@ -55,4 +55,7 @@ node_modules/
 out/
 build/
 .vercel
-/Users/axelfernandes/Desktop/applications/axel/backend/axel.db
+
+# Database files
+*.db
+chroma_db/

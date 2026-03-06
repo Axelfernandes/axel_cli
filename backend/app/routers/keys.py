@@ -44,7 +44,7 @@ async def set_key(
     user = await get_current_user(token=token, db=db)
     
     # Encrypt the API key before storing
-    encrypted_key = encrypt(request.api_key)
+    encrypted_key = encrypt(request.api_key.strip())
     
     if request.provider == "openai":
         user.openai_key = encrypted_key

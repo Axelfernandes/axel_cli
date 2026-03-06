@@ -4,8 +4,8 @@ from sqlalchemy import select
 from pydantic import BaseModel
 from typing import Optional, List
 
-from ..database import get_db
-from ..models import User
+from ..database import get_db, async_session_maker
+from ..models import User, RepoStatus
 from ..services.github import GitHubClient
 from ..auth import get_current_user
 from ..services.embeddings import get_embedding_service
@@ -156,29 +156,82 @@ async def create_pull_request(
     )
     return result
 
-async def run_indexing(owner: str, repo: str, github: GitHubClient, user: User):
+async def run_indexing(owner: str, repo: str, github: GitHubClient, user_id: str, openai_key: Optional[str], gemini_key: Optional[str]):
     """Background task to index all files in a repository."""
-    try:
-        # 1. Get all file metadata
-        files_metadata = await github.get_all_contents_recursive(owner, repo)
-        
-        # 2. Filter for text files and small sizes
-        text_extensions = {'.py', '.js', '.ts', '.tsx', '.jsx', '.html', '.css', '.md', '.json', '.txt', '.yml', '.yaml', '.Dockerfile'}
-        to_index = []
-        for item in files_metadata:
-            if any(item['name'].endswith(ext) for ext in text_extensions):
-                # Fetch content for each file
+    repo_full_name = f"{owner}/{repo}"
+    
+    async with async_session_maker() as db:
+        try:
+            # 1. Initialize Status
+            result = await db.execute(
+                select(RepoStatus).where(
+                    RepoStatus.user_id == user_id, 
+                    RepoStatus.repo_full_name == repo_full_name
+                )
+            )
+            status_record = result.scalar_one_or_none()
+            if not status_record:
+                status_record = RepoStatus(
+                    user_id=user_id,
+                    repo_full_name=repo_full_name,
+                    status="indexing",
+                    progress=0
+                )
+                db.add(status_record)
+            else:
+                status_record.status = "indexing"
+                status_record.progress = 0
+            
+            await db.commit()
+            await db.refresh(status_record)
+
+            # 2. Get all file metadata
+            files_metadata = await github.get_all_contents_recursive(owner, repo)
+            
+            # 3. Filter for text files
+            text_extensions = {'.py', '.js', '.ts', '.tsx', '.jsx', '.html', '.css', '.md', '.json', '.txt', '.yml', '.yaml', '.Dockerfile'}
+            files_to_fetch = [
+                item for item in files_metadata 
+                if any(item['name'].endswith(ext) for ext in text_extensions)
+            ]
+            
+            status_record.total_files = len(files_to_fetch)
+            await db.commit()
+
+            # 4. Fetch and Index individually to show progress
+            to_index = []
+            indexed_count = 0
+            
+            try:
+                embedding_service = get_embedding_service(openai_key=openai_key, gemini_key=gemini_key)
+            except ValueError as ve:
+                print(f"Embedding Service Error: {ve}")
+                if status_record:
+                    status_record.status = "failed"
+                    await db.commit()
+                return
+
+            for item in files_to_fetch:
                 content = await github.get_file_content(owner, repo, item['path'])
                 if content and isinstance(content, str):
-                    to_index.append({"path": item['path'], "content": content})
-        
-        # 3. Index in ChromaDB
-        api_key = get_user_api_key(user, "openai") # Defaulting to OpenAI for embeddings
-        embedding_service = get_embedding_service(api_key=api_key)
-        embedding_service.index_files(to_index)
-        print(f"Successfully indexed {len(to_index)} files for {owner}/{repo}")
-    except Exception as e:
-        print(f"Indexing Error for {owner}/{repo}: {str(e)}")
+                    embedding_service.index_files([{"path": item['path'], "content": content}])
+                    indexed_count += 1
+                    
+                    # Update progress every few files or every file
+                    status_record.indexed_files = indexed_count
+                    status_record.progress = int((indexed_count / len(files_to_fetch)) * 100)
+                    await db.commit()
+            
+            status_record.status = "completed"
+            status_record.progress = 100
+            await db.commit()
+            
+            print(f"Successfully indexed {indexed_count} files for {repo_full_name}")
+        except Exception as e:
+            if status_record:
+                status_record.status = "failed"
+                await db.commit()
+            print(f"Indexing Error for {repo_full_name}: {str(e)}")
 
 @router.post("/{owner}/{repo}/index")
 async def index_repo(
@@ -195,8 +248,43 @@ async def index_repo(
     token = authorization.replace("Bearer ", "")
     user = await get_current_user(token=token, db=db)
     
-    background_tasks.add_task(run_indexing, owner, repo, github, user)
+    # Pass decrypted key and user_id to background task
+    openai_key = get_user_api_key(user, "openai")
+    gemini_key = get_user_api_key(user, "gemini")
+    background_tasks.add_task(run_indexing, owner, repo, github, user.id, openai_key, gemini_key)
     return {"message": "Indexing started in the background"}
+
+@router.get("/{owner}/{repo}/index-status")
+async def get_index_status(
+    owner: str,
+    repo: str,
+    db: AsyncSession = Depends(get_db),
+    authorization: Optional[str] = Header(None),
+):
+    if not authorization or not authorization.startswith("Bearer "):
+        raise HTTPException(status_code=401, detail="Not authenticated")
+    token = authorization.replace("Bearer ", "")
+    user = await get_current_user(token=token, db=db)
+    
+    repo_full_name = f"{owner}/{repo}"
+    result = await db.execute(
+        select(RepoStatus).where(
+            RepoStatus.user_id == user.id,
+            RepoStatus.repo_full_name == repo_full_name
+        )
+    )
+    status_record = result.scalar_one_or_none()
+    
+    if not status_record:
+        return {"status": "none", "progress": 0}
+    
+    return {
+        "status": status_record.status,
+        "progress": status_record.progress,
+        "total_files": status_record.total_files,
+        "indexed_files": status_record.indexed_files,
+        "updated_at": status_record.updated_at.isoformat()
+    }
 
 @router.post("/{owner}/{repo}/scaffold")
 async def scaffold_repo(

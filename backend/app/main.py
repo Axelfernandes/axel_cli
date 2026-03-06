@@ -14,11 +14,8 @@ from .database import init_db
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 
-model_client = None
-
 @asynccontextmanager
 async def lifespan(app: FastAPI):
-    global model_client
     await init_db()
     logger.info("Database initialized.")
     yield
@@ -30,7 +27,11 @@ app.add_middleware(
     allow_origins=[
         os.getenv("FRONTEND_URL", "http://localhost:3501"),
         "http://localhost:3000",
+        "http://localhost:3001",
         "http://localhost:3501",
+        "http://127.0.0.1:3000",
+        "http://127.0.0.1:3001",
+        "http://127.0.0.1:3501",
     ],
     allow_credentials=True,
     allow_methods=["*"],

@@ -46,7 +46,8 @@ def get_user_api_key(user: User, provider: str) -> Optional[str]:
     elif provider == "cerebras":
         encrypted = user.cerebras_key
     
-    return decrypt(encrypted) if encrypted else None
+    val = decrypt(encrypted) if encrypted else None
+    return val.strip() if val else None
 
 async def _get_user_from_header(authorization: Optional[str], db: AsyncSession) -> User:
     if not authorization or not authorization.startswith("Bearer "):
@@ -122,7 +123,9 @@ async def chat_stream(
     context = ""
     if request.repo:
         try:
-            embedding_service = get_embedding_service(api_key=api_key)
+            openai_key = get_user_api_key(user, "openai")
+            gemini_key = get_user_api_key(user, "gemini")
+            embedding_service = get_embedding_service(openai_key=openai_key, gemini_key=gemini_key)
             # Use the last message as the query
             query_text = request.messages[-1].content
             search_results = embedding_service.query(query_text)
